@@ -6,7 +6,7 @@ import { useConnectWalletModal } from '../contexts/connectWalletModal';
 import { useTradeContext } from '../contexts/tradeContext';
 import { useNativeValues } from '../contexts/nativeValues';
 import { useRadarModal } from '../contexts/radarModal';
-import { cluster } from '../contexts/marginContext';
+import { cluster, useMargin } from '../contexts/marginContext';
 import { Input, notification } from 'antd';
 import { NativeToggle } from './NativeToggle';
 import { Info } from './Info';
@@ -18,9 +18,9 @@ import { ReactComponent as RadarIcon } from '../styles/icons/radar_icon.svg';
 import { NATIVE_MINT } from '@solana/spl-token';
 import { useUser } from '../v1/contexts/user';
 import { useMarket } from '../v1/contexts/market';
-import { Reserve, TxnResponse } from '../v1/models/JetTypes';
-import { useJetV1 } from '../v1/hooks/useJetV1';
+import { Reserve } from '../v1/models/JetTypes';
 import { TokenAmount } from '../v1/util/tokens';
+import { TokenFaucet } from '@jet-lab/jet-engine';
 
 export function MarketTable(): JSX.Element {
   const { dictionary } = useLanguage();
@@ -36,7 +36,9 @@ export function MarketTable(): JSX.Element {
   // Jet V1
   const user = useUser();
   const market = useMarket();
-  const { airdrop } = useJetV1();
+
+  // Jet V2
+  const { config, provider, programs, poolsFetched, pools, marginAccount, walletBalances, userFetched } = useMargin();
 
   // If in development, can request airdrop for testing
   const doAirdrop = async (reserve: Reserve): Promise<void> => {
@@ -45,8 +47,13 @@ export function MarketTable(): JSX.Element {
       amount = TokenAmount.tokens('1', reserve.decimals);
     }
 
-    const [res] = await airdrop(reserve.abbrev, amount.amount);
-    if (res === TxnResponse.Success) {
+    const token = config.tokens[reserve.abbrev];
+
+    try {
+      if (!publicKey) {
+        throw new Error('Wallet not connected');
+      }
+      await TokenFaucet.airdrop(provider, amount.amount, token.mint, publicKey, token.faucet);
       notification.success({
         message: dictionary.copilot.alert.success,
         description: dictionary.copilot.alert.airdropSuccess
@@ -54,7 +61,8 @@ export function MarketTable(): JSX.Element {
           .replaceAll('{{RESERVE ABBREV}}', reserve.abbrev),
         placement: 'bottomLeft'
       });
-    } else if (res === TxnResponse.Failed) {
+    } catch (err: any) {
+      console.log(err);
       notification.error({
         message: dictionary.copilot.alert.failed,
         description: dictionary.cockpit.txFailed,
@@ -135,8 +143,9 @@ export function MarketTable(): JSX.Element {
             </thead>
             <tbody>
               {filteredMarketTable.map((reserve, i) => {
+                const walletBalance = walletBalances[reserve.abbrev].amount.tokens;
                 if (!hasSolletEth && reserve.abbrev === 'ETH') {
-                  return;
+                  return undefined;
                 } else {
                   return (
                     <tr
@@ -168,21 +177,17 @@ export function MarketTable(): JSX.Element {
                         <RadarIcon width="18px" />
                       </td>
                       <td
-                        className={
-                          user.walletInit && user.walletBalances[reserve.abbrev]
-                            ? 'user-wallet-value text-btn semi-bold-text'
-                            : ''
-                        }
+                        className={userFetched ? 'user-wallet-value text-btn semi-bold-text' : ''}
                         onClick={() => {
-                          if (user.walletInit && user.walletBalances[reserve.abbrev]) {
+                          if (walletBalance > 0) {
                             setCurrentAction('deposit');
-                            setCurrentAmount(user.walletBalances[reserve.abbrev]);
+                            setCurrentAmount(walletBalance);
                           }
                         }}>
-                        {user.walletInit
-                          ? user.walletBalances[reserve.abbrev] > 0 && user.walletBalances[reserve.abbrev] < 0.0005
+                        {userFetched
+                          ? walletBalance > 0 && walletBalance < 0.0005
                             ? '~0'
-                            : totalAbbrev(user.walletBalances[reserve.abbrev] ?? 0, reserve.price, nativeValues, 3)
+                            : totalAbbrev(walletBalance, reserve.price, nativeValues, 3)
                           : '--'}
                       </td>
                       <td
@@ -201,7 +206,7 @@ export function MarketTable(): JSX.Element {
                           ? user.collateralBalances[reserve.abbrev] > 0 &&
                             user.collateralBalances[reserve.abbrev] < 0.0005
                             ? '~0'
-                            : totalAbbrev(user.collateralBalances[reserve.abbrev] ?? 0, reserve.price, nativeValues, 3)
+                            : totalAbbrev(user.collateralBalances[reserve.abbrev], reserve.price, nativeValues, 3)
                           : '--'}
                       </td>
                       <td
@@ -219,7 +224,7 @@ export function MarketTable(): JSX.Element {
                         {user.walletInit
                           ? user.loanBalances[reserve.abbrev] > 0 && user.loanBalances[reserve.abbrev] < 0.0005
                             ? '~0'
-                            : totalAbbrev(user.loanBalances[reserve.abbrev] ?? 0, reserve.price, nativeValues, 3)
+                            : totalAbbrev(user.loanBalances[reserve.abbrev], reserve.price, nativeValues, 3)
                           : '--'}
                       </td>
                       {/* Faucet for testing if in development */}
